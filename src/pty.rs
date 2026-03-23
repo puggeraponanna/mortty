@@ -1,6 +1,7 @@
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::io::{Read, Write};
 
@@ -14,6 +15,7 @@ pub struct Pty {
     pub pty_pair: PtyPair,
     pub rx: Receiver<Vec<u8>>,
     pub writer: Box<dyn std::io::Write + Send>,
+    pub proxy_pending: Arc<AtomicBool>,
 }
 
 impl Pty {
@@ -46,6 +48,9 @@ impl Pty {
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
 
+        let proxy_pending = Arc::new(AtomicBool::new(false));
+        let proxy_pending_thread = proxy_pending.clone();
+
         // Spawn a background thread to continually read from the PTY
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -59,7 +64,10 @@ impl Pty {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break; // Receiver hung up
                         }
-                        let _ = proxy.send_event(ControlEvent::Wakeup);
+                        // Only send Wakeup if one isn't already pending in the loop
+                        if !proxy_pending_thread.swap(true, Ordering::SeqCst) {
+                            let _ = proxy.send_event(ControlEvent::Wakeup);
+                        }
                     }
                     Err(e) => {
                         log::error!("Error reading from PTY: {}", e);
@@ -74,11 +82,13 @@ impl Pty {
             pty_pair: pair,
             rx,
             writer,
+            proxy_pending,
         })
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         self.writer.write_all(data)?;
+        self.writer.flush()?;
         Ok(())
     }
 

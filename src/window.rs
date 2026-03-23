@@ -8,6 +8,7 @@ use winit::{
     window::{Window, WindowId},
 };
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use crate::pty::{Pty, ControlEvent};
 use crate::terminal::Terminal;
 use vte::Parser;
@@ -20,11 +21,31 @@ pub struct App<'a> {
     pub proxy: winit::event_loop::EventLoopProxy<ControlEvent>,
 }
 
+impl<'a> App<'a> {
+    fn drain_pty(&mut self) {
+        if let Some(pty) = &mut self.pty {
+            let mut has_output = false;
+            while let Ok(bytes) = pty.rx.try_recv() {
+                for byte in bytes.iter() {
+                    self.parser.advance(&mut self.terminal, *byte);
+                }
+                has_output = true;
+            }
+            if has_output {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            // Acknowledge that we've drained the PTY, allowing new wakeup signals
+            pty.proxy_pending.store(false, Ordering::SeqCst);
+        }
+    }
+}
 
 impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ControlEvent) {
         match event {
             ControlEvent::Wakeup => {
+                self.drain_pty();
                 if let Some(state) = &self.state {
                     state.window().request_redraw();
                 }
@@ -82,33 +103,16 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
                 state.window().request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(pty) = &mut self.pty {
-                    let mut has_output = false;
-                    while let Ok(bytes) = pty.rx.try_recv() {
-                        for byte in bytes.iter() {
-                            self.parser.advance(&mut self.terminal, *byte);
+                if let Some(state) = &mut self.state {
+                    match state.render(&mut self.terminal) {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            error!("Out of Memory");
+                            event_loop.exit();
                         }
-                        
-                        // Debug print to console alongside terminal grid parsing
-                        if let Ok(text) = String::from_utf8(bytes.clone()) {
-                            print!("{}", text);
-                        }
-                        has_output = true;
+                        Err(e) => error!("{:?}", e),
                     }
-                    if has_output {
-                        use std::io::Write;
-                        let _ = std::io::stdout().flush();
-                    }
-                }
-
-                match state.render(&mut self.terminal) {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => {
-                        error!("Out of Memory");
-                        event_loop.exit();
-                    }
-                    Err(e) => error!("{:?}", e),
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -134,6 +138,15 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        self.drain_pty();
+        if self.terminal.dirty {
+            if let Some(state) = &self.state {
+                state.window().request_redraw();
+            }
         }
     }
 }

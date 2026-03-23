@@ -97,6 +97,7 @@ impl Terminal {
         self.rows = new_rows;
         self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
         self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
+        self.dirty = true;
     }
 }
 
