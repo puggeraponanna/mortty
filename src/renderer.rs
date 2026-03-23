@@ -118,7 +118,7 @@ impl<'a> WgpuState<'a> {
     }
 
     pub fn render(&mut self, terminal: &crate::terminal::Terminal) -> Result<(), wgpu::SurfaceError> {
-        let mut content = String::new();
+        let mut content = String::with_capacity(terminal.rows * (terminal.cols + 1));
         for row in &terminal.grid {
             for cell in row {
                 let current_char = if cell.c == '\0' { ' ' } else { cell.c };

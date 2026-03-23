@@ -23,7 +23,13 @@ impl Pty {
 
         // Determine the shell to run
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-        let cmd = CommandBuilder::new(shell);
+        let mut cmd = CommandBuilder::new(shell);
+        
+        let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
+        cmd.env("TERM", term);
+        
+        let colorterm = std::env::var("COLORTERM").unwrap_or_else(|_| "truecolor".to_string());
+        cmd.env("COLORTERM", colorterm);
 
         // Spawn the child process linked to the PTY
         let _child = pair.slave.spawn_command(cmd)?;
