@@ -11,7 +11,7 @@ pub struct Pty {
 }
 
 impl Pty {
-    pub fn new() -> Result<Self> {
+    pub fn new(proxy: winit::event_loop::EventLoopProxy<()>) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
@@ -44,6 +44,7 @@ impl Pty {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break; // Receiver hung up
                         }
+                        let _ = proxy.send_event(());
                     }
                     Err(e) => {
                         log::error!("Error reading from PTY: {}", e);

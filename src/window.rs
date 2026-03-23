@@ -17,20 +17,17 @@ pub struct App<'a> {
     pub pty: Option<Pty>,
     pub terminal: Terminal,
     pub parser: Parser,
+    pub proxy: winit::event_loop::EventLoopProxy<()>,
 }
 
-impl<'a> Default for App<'a> {
-    fn default() -> Self {
-        Self {
-            state: None,
-            pty: None,
-            terminal: Terminal::new(80, 24),
-            parser: Parser::new(),
-        }
-    }
-}
 
 impl<'a> ApplicationHandler for App<'a> {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        if let Some(state) = &self.state {
+            state.window().request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
             let window_attributes = Window::default_attributes()
@@ -39,7 +36,7 @@ impl<'a> ApplicationHandler for App<'a> {
             
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             
-            self.pty = Some(Pty::new().expect("Failed to spawn PTY subprocess"));
+            self.pty = Some(Pty::new(self.proxy.clone()).expect("Failed to spawn PTY subprocess"));
             
             let state = pollster::block_on(WgpuState::new(window));
             self.state = Some(state);
@@ -86,7 +83,7 @@ impl<'a> ApplicationHandler for App<'a> {
                     }
                 }
 
-                match state.render() {
+                match state.render(&self.terminal) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     Err(wgpu::SurfaceError::OutOfMemory) => {
@@ -126,9 +123,16 @@ impl<'a> ApplicationHandler for App<'a> {
 pub fn run() -> Result<(), EventLoopError> {
     info!("Starting mortty...");
     
-    let event_loop = EventLoop::new()?;
+    let event_loop = EventLoop::<()>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::default();
+    let proxy = event_loop.create_proxy();
+    let mut app = App {
+        state: None,
+        pty: None,
+        terminal: Terminal::new(80, 24),
+        parser: Parser::new(),
+        proxy,
+    };
     event_loop.run_app(&mut app)
 }
