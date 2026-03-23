@@ -1,14 +1,14 @@
-use winit::window::Window;
-use winit::dpi::PhysicalSize;
+use glyphon::{FontSystem, Metrics, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer};
 use std::sync::Arc;
-use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, TextBounds, TextArea, Metrics};
+use winit::dpi::PhysicalSize;
+use winit::window::Window;
 pub const FONT_SIZE: f32 = 24.0;
-pub const CELL_HEIGHT: f32 = 30.0;
+pub const CELL_HEIGHT: f32 = 16.0;
 pub const PADDING: f32 = 10.0;
 
 /// Compute (cols, rows) from a physical pixel size and font metrics.
 pub fn cols_rows_from_size(size: PhysicalSize<u32>) -> (usize, usize) {
-    let cell_w = FONT_SIZE * 0.6;
+    let cell_w = FONT_SIZE * 0.5;
     let cols = ((size.width as f32 - PADDING * 2.0) / cell_w).floor() as usize;
     let rows = ((size.height as f32 - PADDING * 2.0) / CELL_HEIGHT).floor() as usize;
     (cols.max(20), rows.max(5))
@@ -21,7 +21,8 @@ pub struct BgVertex {
     pub color: [f32; 3],
 }
 
-const BG_ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3];
+const BG_ATTRIBS: [wgpu::VertexAttribute; 2] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3];
 
 impl BgVertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
@@ -102,7 +103,10 @@ impl<'a> WgpuState<'a> {
             .copied()
             .find(|&p| p == wgpu::PresentMode::Mailbox)
             .unwrap_or_else(|| {
-                surface_caps.present_modes.iter().copied()
+                surface_caps
+                    .present_modes
+                    .iter()
+                    .copied()
                     .find(|&p| p == wgpu::PresentMode::Immediate)
                     .unwrap_or(wgpu::PresentMode::Fifo)
             });
@@ -124,11 +128,21 @@ impl<'a> WgpuState<'a> {
         let swash_cache = SwashCache::new();
         let cache = glyphon::Cache::new(&device);
         let mut text_atlas = TextAtlas::new(&device, &queue, &cache, surface_format);
-        let text_renderer = TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
+        let text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
         let viewport = glyphon::Viewport::new(&device, &cache);
 
-        let mut text_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, CELL_HEIGHT));
-        text_buffer.set_size(&mut font_system, Some(size.width as f32), Some(size.height as f32));
+        let mut text_buffer =
+            glyphon::Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, CELL_HEIGHT));
+        text_buffer.set_size(
+            &mut font_system,
+            Some(size.width as f32),
+            Some(size.height as f32),
+        );
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("bg_shader.wgsl"));
         let bg_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -136,7 +150,7 @@ impl<'a> WgpuState<'a> {
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
-        
+
         let bg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("BG Pipeline"),
             layout: Some(&bg_pipeline_layout),
@@ -203,10 +217,13 @@ impl<'a> WgpuState<'a> {
 
     fn push_bg_quad(
         verts: &mut Vec<BgVertex>,
-        x0: f32, x1: f32,
-        py: f32, cell_h: f32,
+        x0: f32,
+        x1: f32,
+        py: f32,
+        cell_h: f32,
         bg: [u8; 3],
-        sw: f32, sh: f32,
+        sw: f32,
+        sh: f32,
     ) {
         let r = bg[0] as f32 / 255.0;
         let g = bg[1] as f32 / 255.0;
@@ -218,12 +235,30 @@ impl<'a> WgpuState<'a> {
         let cx1 = (x1 / sw) * 2.0 - 1.0;
         let cy1 = 1.0 - ((py + cell_h) / sh) * 2.0;
 
-        verts.push(BgVertex { position: [cx0, cy0], color });
-        verts.push(BgVertex { position: [cx0, cy1], color });
-        verts.push(BgVertex { position: [cx1, cy0], color });
-        verts.push(BgVertex { position: [cx1, cy0], color });
-        verts.push(BgVertex { position: [cx0, cy1], color });
-        verts.push(BgVertex { position: [cx1, cy1], color });
+        verts.push(BgVertex {
+            position: [cx0, cy0],
+            color,
+        });
+        verts.push(BgVertex {
+            position: [cx0, cy1],
+            color,
+        });
+        verts.push(BgVertex {
+            position: [cx1, cy0],
+            color,
+        });
+        verts.push(BgVertex {
+            position: [cx1, cy0],
+            color,
+        });
+        verts.push(BgVertex {
+            position: [cx0, cy1],
+            color,
+        });
+        verts.push(BgVertex {
+            position: [cx1, cy1],
+            color,
+        });
     }
 
     pub fn window(&self) -> &Window {
@@ -236,13 +271,27 @@ impl<'a> WgpuState<'a> {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.text_buffer.set_size(&mut self.font_system, Some(new_size.width as f32), Some(new_size.height as f32));
-            self.viewport.update(&self.queue, glyphon::Resolution { width: self.config.width, height: self.config.height });
+            self.text_buffer.set_size(
+                &mut self.font_system,
+                Some(new_size.width as f32),
+                Some(new_size.height as f32),
+            );
+            self.viewport.update(
+                &self.queue,
+                glyphon::Resolution {
+                    width: self.config.width,
+                    height: self.config.height,
+                },
+            );
         }
     }
 
-    pub fn render(&mut self, terminal: &mut crate::terminal::Terminal) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(
+        &mut self,
+        terminal: &mut crate::terminal::Terminal,
+    ) -> Result<(), wgpu::SurfaceError> {
         if terminal.dirty {
+            let _start = std::time::Instant::now();
             let mut spans: Vec<(String, glyphon::Attrs<'static>)> = Vec::new();
             let mut current_string = String::new();
             let mut current_fg = [200, 200, 200];
@@ -251,12 +300,20 @@ impl<'a> WgpuState<'a> {
             for row in &terminal.grid {
                 for cell in row {
                     let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
-                    let cell_char = if cell.c == '\0' || is_block { ' ' } else { cell.c };
-                    
+                    let cell_char = if cell.c == '\0' || is_block {
+                        ' '
+                    } else {
+                        cell.c
+                    };
+
                     if cell.fg != current_fg && !is_first {
                         let attrs = glyphon::Attrs::new()
-                            .family(glyphon::Family::Monospace)
-                            .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
+                            .family(glyphon::Family::Name("FiraCode Nerd Font"))
+                            .color(glyphon::Color::rgb(
+                                current_fg[0],
+                                current_fg[1],
+                                current_fg[2],
+                            ));
                         spans.push((current_string, attrs));
                         current_string = String::new();
                         current_fg = cell.fg;
@@ -272,23 +329,30 @@ impl<'a> WgpuState<'a> {
 
             if !current_string.is_empty() {
                 let attrs = glyphon::Attrs::new()
-                    .family(glyphon::Family::Monospace)
-                    .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
+                    .family(glyphon::Family::Name("FiraCode Nerd Font"))
+                    .color(glyphon::Color::rgb(
+                        current_fg[0],
+                        current_fg[1],
+                        current_fg[2],
+                    ));
                 spans.push((current_string, attrs));
             }
 
             self.text_buffer.set_rich_text(
                 &mut self.font_system,
                 spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
-                glyphon::Attrs::new().family(glyphon::Family::Monospace),
+                glyphon::Attrs::new().family(glyphon::Family::Name("FiraCode Nerd Font")),
                 glyphon::Shaping::Advanced,
             );
-            self.text_buffer.shape_until_scroll(&mut self.font_system, false);
+            self.text_buffer
+                .shape_until_scroll(&mut self.font_system, false);
+            let _shaping_done = _start.elapsed();
 
             // Rebuild background vertices
+            let _bg_start = std::time::Instant::now();
             let cell_height = CELL_HEIGHT;
             let start_x = PADDING;
-            let start_y = PADDING;
+            let start_y = PADDING + (CELL_HEIGHT - FONT_SIZE) / 2.0;
             let screen_w = self.config.width as f32;
             let screen_h = self.config.height as f32;
 
@@ -296,9 +360,11 @@ impl<'a> WgpuState<'a> {
 
             for run in self.text_buffer.layout_runs() {
                 let row_idx = run.line_i;
-                if row_idx >= terminal.rows { continue; }
+                if row_idx >= terminal.rows {
+                    continue;
+                }
 
-                let py = start_y + (row_idx as f32) * cell_height;
+                let py = start_y + run.line_y - cell_height - (FONT_SIZE - CELL_HEIGHT) / 2.0 - 2.0;
 
                 let mut span_start_x: Option<f32> = None;
                 let mut span_end_x = 0.0_f32;
@@ -313,7 +379,16 @@ impl<'a> WgpuState<'a> {
 
                     let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
                     if is_block && cell.fg != [200, 200, 200] {
-                        Self::push_bg_quad(&mut bg_vertices, gx0, gx1, py, cell_height, cell.fg, screen_w, screen_h);
+                        Self::push_bg_quad(
+                            &mut bg_vertices,
+                            gx0,
+                            gx1,
+                            py,
+                            cell_height,
+                            cell.fg,
+                            screen_w,
+                            screen_h,
+                        );
                     }
 
                     if cell.bg != [12, 12, 12] {
@@ -322,7 +397,16 @@ impl<'a> WgpuState<'a> {
                                 span_end_x = gx1;
                                 continue;
                             } else {
-                                Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                                Self::push_bg_quad(
+                                    &mut bg_vertices,
+                                    sx,
+                                    span_end_x,
+                                    py,
+                                    cell_height,
+                                    span_bg,
+                                    screen_w,
+                                    screen_h,
+                                );
                             }
                         }
                         span_start_x = Some(gx0);
@@ -330,46 +414,67 @@ impl<'a> WgpuState<'a> {
                         span_bg = cell.bg;
                     } else {
                         if let Some(sx) = span_start_x.take() {
-                            Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                            Self::push_bg_quad(
+                                &mut bg_vertices,
+                                sx,
+                                span_end_x,
+                                py,
+                                cell_height,
+                                span_bg,
+                                screen_w,
+                                screen_h,
+                            );
                         }
                     }
                 }
 
                 if let Some(sx) = span_start_x.take() {
-                    Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                    Self::push_bg_quad(
+                        &mut bg_vertices,
+                        sx,
+                        span_end_x,
+                        py,
+                        cell_height,
+                        span_bg,
+                        screen_w,
+                        screen_h,
+                    );
                 }
             }
 
             self.bg_vertex_count = bg_vertices.len() as u32;
             if self.bg_vertex_count > 0 {
-                self.queue.write_buffer(&self.bg_vertex_buf, 0, bytemuck::cast_slice(&bg_vertices));
+                self.queue
+                    .write_buffer(&self.bg_vertex_buf, 0, bytemuck::cast_slice(&bg_vertices));
             }
 
             terminal.clear_dirty();
         }
 
-        self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            [TextArea {
-                buffer: &self.text_buffer,
-                left: 10.0,
-                top: 10.0,
-                scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: self.config.width as i32,
-                    bottom: self.config.height as i32,
-                },
-                default_color: glyphon::Color::rgb(255, 255, 255),
-                custom_glyphs: &[],
-            }],
-            &mut self.swash_cache,
-        ).unwrap();
+        self.text_renderer
+            .prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                [TextArea {
+                    buffer: &self.text_buffer,
+                    left: 10.0,
+                    top: 10.0 + (CELL_HEIGHT - FONT_SIZE) / 2.0, // Center vertically
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: self.config.width as i32,
+                        bottom: self.config.height as i32,
+                    },
+                    default_color: glyphon::Color::rgb(255, 255, 255),
+                    custom_glyphs: &[],
+                }],
+                &mut self.swash_cache,
+            )
+            .unwrap();
 
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -409,7 +514,9 @@ impl<'a> WgpuState<'a> {
                 render_pass.draw(0..self.bg_vertex_count, 0..1);
             }
 
-            self.text_renderer.render(&self.text_atlas, &self.viewport, &mut render_pass).unwrap();
+            self.text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut render_pass)
+                .unwrap();
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
