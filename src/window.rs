@@ -20,6 +20,7 @@ pub struct App<'a> {
     pub parser: Parser,
     pub proxy: winit::event_loop::EventLoopProxy<ControlEvent>,
     pub modifiers: winit::keyboard::ModifiersState,
+    pub config: crate::config::Config,
 }
 
 impl<'a> App<'a> {
@@ -69,15 +70,15 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
             
             // Need font metrics to calculate cols/rows
             let mut font_system = glyphon::FontSystem::new();
-            let metrics = crate::renderer::FontMetrics::new(&mut font_system, 22.0);
-            let (cols, rows) = cols_rows_from_size(phys, &metrics);
+            let metrics = crate::renderer::FontMetrics::new(&mut font_system, self.config.font_size, &self.config.font_family);
+            let (cols, rows) = cols_rows_from_size(phys, &metrics, self.config.padding);
 
             // Resize terminal grid to match window size
             self.terminal = crate::terminal::Terminal::new(cols, rows);
 
             self.pty = Some(Pty::new(self.proxy.clone(), cols as u16, rows as u16).expect("Failed to spawn PTY subprocess"));
             
-            let state = pollster::block_on(WgpuState::new(window));
+            let state = pollster::block_on(WgpuState::new(window, self.config.clone()));
             self.state = Some(state);
         }
     }
@@ -100,7 +101,7 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
             }
             WindowEvent::Resized(physical_size) => {
                 state.resize(physical_size);
-                let (cols, rows) = cols_rows_from_size(physical_size, &state.font_metrics);
+                let (cols, rows) = cols_rows_from_size(physical_size, &state.font_metrics, state.app_config.padding);
                 self.terminal.resize(cols, rows);
                 if let Some(pty) = &self.pty {
                     pty.resize(cols as u16, rows as u16);
@@ -187,6 +188,7 @@ pub fn run() -> Result<(), EventLoopError> {
         parser: Parser::new(),
         proxy,
         modifiers: winit::keyboard::ModifiersState::default(),
+        config: crate::config::Config::load(),
     };
     event_loop.run_app(&mut app)
 }

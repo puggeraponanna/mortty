@@ -1,8 +1,8 @@
+use crate::config::Config;
 use glyphon::{FontSystem, Metrics, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
-pub const PADDING: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FontMetrics {
@@ -13,16 +13,17 @@ pub struct FontMetrics {
 }
 
 impl FontMetrics {
-    pub fn new(font_system: &mut FontSystem, font_size: f32) -> Self {
-        let mut buffer = glyphon::Buffer::new(font_system, Metrics::new(font_size, font_size * 1.1));
+    pub fn new(font_system: &mut FontSystem, font_size: f32, font_family: &str) -> Self {
+        let mut buffer =
+            glyphon::Buffer::new(font_system, Metrics::new(font_size, font_size * 1.1));
         buffer.set_size(font_system, Some(100.0), Some(100.0));
-        
+
         // Use a space to measure width and ascent/descent
         buffer.set_text(
-            font_system, 
-            " ", 
-            glyphon::Attrs::new().family(glyphon::Family::Name("FiraCode Nerd Font")), 
-            glyphon::Shaping::Basic
+            font_system,
+            " ",
+            glyphon::Attrs::new().family(glyphon::Family::Name(font_family)),
+            glyphon::Shaping::Basic,
         );
         buffer.shape_until_scroll(font_system, false);
 
@@ -33,7 +34,7 @@ impl FontMetrics {
         if let Some(run) = buffer.layout_runs().next() {
             ascent = run.line_y;
         }
-        
+
         let mut cell_w = font_size * 0.6; // fallback
         if let Some(run) = buffer.layout_runs().next() {
             if let Some(glyph) = run.glyphs.first() {
@@ -51,9 +52,13 @@ impl FontMetrics {
 }
 
 /// Compute (cols, rows) from a physical pixel size and font metrics.
-pub fn cols_rows_from_size(size: PhysicalSize<u32>, metrics: &FontMetrics) -> (usize, usize) {
-    let cols = ((size.width as f32 - PADDING * 2.0) / metrics.cell_w).floor() as usize;
-    let rows = ((size.height as f32 - PADDING * 2.0) / metrics.cell_h).floor() as usize;
+pub fn cols_rows_from_size(
+    size: PhysicalSize<u32>,
+    metrics: &FontMetrics,
+    padding: f32,
+) -> (usize, usize) {
+    let cols = ((size.width as f32 - padding * 2.0) / metrics.cell_w).floor() as usize;
+    let rows = ((size.height as f32 - padding * 2.0) / metrics.cell_h).floor() as usize;
     (cols.max(20), rows.max(5))
 }
 
@@ -95,10 +100,11 @@ pub struct WgpuState<'a> {
     pub bg_vertex_buf: wgpu::Buffer,
     pub bg_vertex_count: u32,
     pub font_metrics: FontMetrics,
+    pub app_config: Config,
 }
 
 impl<'a> WgpuState<'a> {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(window: Arc<Window>, app_config: Config) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -179,7 +185,11 @@ impl<'a> WgpuState<'a> {
         );
         let viewport = glyphon::Viewport::new(&device, &cache);
 
-        let font_metrics = FontMetrics::new(&mut font_system, 22.0);
+        let font_metrics = FontMetrics::new(
+            &mut font_system,
+            app_config.font_size,
+            &app_config.font_family,
+        );
 
         let mut text_buffer = glyphon::Buffer::new(
             &mut font_system,
@@ -259,6 +269,7 @@ impl<'a> WgpuState<'a> {
             bg_vertex_buf,
             bg_vertex_count: 0,
             font_metrics,
+            app_config,
         }
     }
 
@@ -339,7 +350,7 @@ impl<'a> WgpuState<'a> {
     ) -> Result<(), wgpu::SurfaceError> {
         if terminal.dirty {
             let _start = std::time::Instant::now();
-            let mut spans: Vec<(String, glyphon::Attrs<'static>)> = Vec::new();
+            let mut spans: Vec<(String, glyphon::Attrs)> = Vec::new();
             let mut current_string = String::new();
             let mut current_fg = [200, 200, 200];
             let mut is_first = true;
@@ -355,7 +366,7 @@ impl<'a> WgpuState<'a> {
 
                     if cell.fg != current_fg && !is_first {
                         let attrs = glyphon::Attrs::new()
-                            .family(glyphon::Family::Name("FiraCode Nerd Font"))
+                            .family(glyphon::Family::Name(&self.app_config.font_family))
                             .color(glyphon::Color::rgb(
                                 current_fg[0],
                                 current_fg[1],
@@ -376,7 +387,7 @@ impl<'a> WgpuState<'a> {
 
             if !current_string.is_empty() {
                 let attrs = glyphon::Attrs::new()
-                    .family(glyphon::Family::Name("FiraCode Nerd Font"))
+                    .family(glyphon::Family::Name(&self.app_config.font_family))
                     .color(glyphon::Color::rgb(
                         current_fg[0],
                         current_fg[1],
@@ -388,7 +399,7 @@ impl<'a> WgpuState<'a> {
             self.text_buffer.set_rich_text(
                 &mut self.font_system,
                 spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
-                glyphon::Attrs::new().family(glyphon::Family::Name("FiraCode Nerd Font")),
+                glyphon::Attrs::new().family(glyphon::Family::Name(&self.app_config.font_family)),
                 glyphon::Shaping::Advanced,
             );
             self.text_buffer
@@ -398,8 +409,8 @@ impl<'a> WgpuState<'a> {
             // Rebuild background vertices
             let cell_height = self.font_metrics.cell_h;
             let cell_width = self.font_metrics.cell_w;
-            let start_x = PADDING;
-            let start_y = PADDING;
+            let start_x = self.app_config.padding;
+            let start_y = self.app_config.padding;
             let screen_w = self.config.width as f32;
             let screen_h = self.config.height as f32;
 
@@ -510,8 +521,8 @@ impl<'a> WgpuState<'a> {
                 &self.viewport,
                 [TextArea {
                     buffer: &self.text_buffer,
-                    left: 10.0,
-                    top: 10.0,
+                    left: self.app_config.padding,
+                    top: self.app_config.padding,
                     scale: 1.0,
                     bounds: TextBounds {
                         left: 0,

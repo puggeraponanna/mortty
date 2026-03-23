@@ -2,6 +2,7 @@ mod pty;
 mod renderer;
 mod terminal;
 mod window;
+mod config;
 
 fn main() {
     env_logger::init();
