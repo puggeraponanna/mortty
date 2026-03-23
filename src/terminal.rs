@@ -63,6 +63,7 @@ pub struct Terminal {
     pub rows: usize,
     pub current_fg: [u8; 3],
     pub current_bg: [u8; 3],
+    pub dirty: bool,
 }
 
 impl Terminal {
@@ -76,7 +77,12 @@ impl Terminal {
             rows,
             current_fg: [200, 200, 200],
             current_bg: [12, 12, 12],
+            dirty: true,
         }
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
@@ -101,10 +107,12 @@ impl Perform for Terminal {
             self.grid[self.cursor_row][self.cursor_col].fg = self.current_fg;
             self.grid[self.cursor_row][self.cursor_col].bg = self.current_bg;
             self.cursor_col += 1;
+            self.dirty = true;
         }
     }
 
     fn execute(&mut self, byte: u8) {
+        self.dirty = true;
         match byte {
             10 | 11 | 12 => { // LF, VT, FF (Scroll)
                 if self.cursor_row == self.rows - 1 {
@@ -137,6 +145,7 @@ impl Perform for Terminal {
     fn unhook(&mut self) {}
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
     fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
+        self.dirty = true;
         match action {
             'J' => {
                 let mut it = params.iter();

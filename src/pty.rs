@@ -4,6 +4,12 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::io::{Read, Write};
 
+#[derive(Debug)]
+pub enum ControlEvent {
+    Wakeup,
+    PtyExit,
+}
+
 pub struct Pty {
     pub pty_pair: PtyPair,
     pub rx: Receiver<Vec<u8>>,
@@ -11,7 +17,7 @@ pub struct Pty {
 }
 
 impl Pty {
-    pub fn new(proxy: winit::event_loop::EventLoopProxy<()>, cols: u16, rows: u16) -> Result<Self> {
+    pub fn new(proxy: winit::event_loop::EventLoopProxy<ControlEvent>, cols: u16, rows: u16) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
@@ -45,15 +51,19 @@ impl Pty {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break, // EOF
+                    Ok(0) => {
+                        let _ = proxy.send_event(ControlEvent::PtyExit);
+                        break; // EOF
+                    }
                     Ok(n) => {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break; // Receiver hung up
                         }
-                        let _ = proxy.send_event(());
+                        let _ = proxy.send_event(ControlEvent::Wakeup);
                     }
                     Err(e) => {
                         log::error!("Error reading from PTY: {}", e);
+                        let _ = proxy.send_event(ControlEvent::PtyExit);
                         break;
                     }
                 }

@@ -8,7 +8,7 @@ use winit::{
     window::{Window, WindowId},
 };
 use std::sync::Arc;
-use crate::pty::Pty;
+use crate::pty::{Pty, ControlEvent};
 use crate::terminal::Terminal;
 use vte::Parser;
 
@@ -17,14 +17,22 @@ pub struct App<'a> {
     pub pty: Option<Pty>,
     pub terminal: Terminal,
     pub parser: Parser,
-    pub proxy: winit::event_loop::EventLoopProxy<()>,
+    pub proxy: winit::event_loop::EventLoopProxy<ControlEvent>,
 }
 
 
-impl<'a> ApplicationHandler for App<'a> {
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
-        if let Some(state) = &self.state {
-            state.window().request_redraw();
+impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ControlEvent) {
+        match event {
+            ControlEvent::Wakeup => {
+                if let Some(state) = &self.state {
+                    state.window().request_redraw();
+                }
+            }
+            ControlEvent::PtyExit => {
+                info!("PTY exit signaled, shutting down...");
+                event_loop.exit();
+            }
         }
     }
 
@@ -93,7 +101,7 @@ impl<'a> ApplicationHandler for App<'a> {
                     }
                 }
 
-                match state.render(&self.terminal) {
+                match state.render(&mut self.terminal) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     Err(wgpu::SurfaceError::OutOfMemory) => {
@@ -133,14 +141,14 @@ impl<'a> ApplicationHandler for App<'a> {
 pub fn run() -> Result<(), EventLoopError> {
     info!("Starting mortty...");
     
-    let event_loop = EventLoop::<()>::with_user_event().build()?;
+    let event_loop = EventLoop::<ControlEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let proxy = event_loop.create_proxy();
     let mut app = App {
         state: None,
         pty: None,
-        terminal: Terminal::new(80, 24),
+        terminal: Terminal::new(80, 24), // Initial size will be updated in resumed()
         parser: Parser::new(),
         proxy,
     };

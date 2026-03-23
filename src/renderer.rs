@@ -2,8 +2,6 @@ use winit::window::Window;
 use winit::dpi::PhysicalSize;
 use std::sync::Arc;
 use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, TextBounds, TextArea, Metrics};
-use wgpu::util::DeviceExt;
-
 pub const FONT_SIZE: f32 = 24.0;
 pub const CELL_HEIGHT: f32 = 30.0;
 pub const PADDING: f32 = 10.0;
@@ -50,6 +48,9 @@ pub struct WgpuState<'a> {
     pub text_buffer: glyphon::Buffer,
     pub viewport: glyphon::Viewport,
     pub bg_pipeline: wgpu::RenderPipeline,
+    /// Persistent background vertex buffer — reused every frame
+    pub bg_vertex_buf: wgpu::Buffer,
+    pub bg_vertex_count: u32,
 }
 
 impl<'a> WgpuState<'a> {
@@ -159,6 +160,16 @@ impl<'a> WgpuState<'a> {
             cache: None,
         });
 
+        // Pre-allocate a large enough bg vertex buffer for a full screen of cells.
+        // Max cells = ~300 cols * ~60 rows = 18000 cells, each 6 verts × 20 bytes.
+        let max_bg_verts = 18000usize * 6;
+        let bg_vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BG Vertex Buffer"),
+            size: (max_bg_verts * std::mem::size_of::<BgVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             surface,
             device,
@@ -174,6 +185,8 @@ impl<'a> WgpuState<'a> {
             text_buffer,
             viewport,
             bg_pipeline,
+            bg_vertex_buf,
+            bg_vertex_count: 0,
         }
     }
 
@@ -217,50 +230,112 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    pub fn render(&mut self, terminal: &crate::terminal::Terminal) -> Result<(), wgpu::SurfaceError> {
-        let mut spans: Vec<(String, glyphon::Attrs<'static>)> = Vec::new();
-        let mut current_string = String::new();
-        let mut current_fg = [200, 200, 200];
-        let mut is_first = true;
+    pub fn render(&mut self, terminal: &mut crate::terminal::Terminal) -> Result<(), wgpu::SurfaceError> {
+        if terminal.dirty {
+            let mut spans: Vec<(String, glyphon::Attrs<'static>)> = Vec::new();
+            let mut current_string = String::new();
+            let mut current_fg = [200, 200, 200];
+            let mut is_first = true;
 
-        for row in &terminal.grid {
-            for cell in row {
-                // Block-filling chars (█ etc.) are rendered as fg-colored WGSL quads
-                // so they fill the full cell height. Replace with space for glyphon.
-                let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
-                let cell_char = if cell.c == '\0' || is_block { ' ' } else { cell.c };
-                
-                if cell.fg != current_fg && !is_first {
-                    let attrs = glyphon::Attrs::new()
-                        .family(glyphon::Family::Monospace)
-                        .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
-                    spans.push((current_string, attrs));
-                    current_string = String::new();
-                    current_fg = cell.fg;
-                } else if is_first {
-                    current_fg = cell.fg;
-                    is_first = false;
+            for row in &terminal.grid {
+                for cell in row {
+                    let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
+                    let cell_char = if cell.c == '\0' || is_block { ' ' } else { cell.c };
+                    
+                    if cell.fg != current_fg && !is_first {
+                        let attrs = glyphon::Attrs::new()
+                            .family(glyphon::Family::Monospace)
+                            .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
+                        spans.push((current_string, attrs));
+                        current_string = String::new();
+                        current_fg = cell.fg;
+                    } else if is_first {
+                        current_fg = cell.fg;
+                        is_first = false;
+                    }
+
+                    current_string.push(cell_char);
+                }
+                current_string.push('\n');
+            }
+
+            if !current_string.is_empty() {
+                let attrs = glyphon::Attrs::new()
+                    .family(glyphon::Family::Monospace)
+                    .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
+                spans.push((current_string, attrs));
+            }
+
+            self.text_buffer.set_rich_text(
+                &mut self.font_system,
+                spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
+                glyphon::Attrs::new().family(glyphon::Family::Monospace),
+                glyphon::Shaping::Advanced,
+            );
+            self.text_buffer.shape_until_scroll(&mut self.font_system, false);
+
+            // Rebuild background vertices
+            let cell_height = CELL_HEIGHT;
+            let start_x = PADDING;
+            let start_y = PADDING;
+            let screen_w = self.config.width as f32;
+            let screen_h = self.config.height as f32;
+
+            let mut bg_vertices: Vec<BgVertex> = Vec::new();
+
+            for run in self.text_buffer.layout_runs() {
+                let row_idx = run.line_i;
+                if row_idx >= terminal.rows { continue; }
+
+                let py = start_y + (row_idx as f32) * cell_height;
+
+                let mut span_start_x: Option<f32> = None;
+                let mut span_end_x = 0.0_f32;
+                let mut span_bg: [u8; 3] = [12, 12, 12];
+
+                for (glyph_idx, glyph) in run.glyphs.iter().enumerate() {
+                    let col = glyph_idx.min(terminal.cols - 1);
+                    let cell = &terminal.grid[row_idx][col];
+
+                    let gx0 = start_x + glyph.x;
+                    let gx1 = gx0 + glyph.w;
+
+                    let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
+                    if is_block && cell.fg != [200, 200, 200] {
+                        Self::push_bg_quad(&mut bg_vertices, gx0, gx1, py, cell_height, cell.fg, screen_w, screen_h);
+                    }
+
+                    if cell.bg != [12, 12, 12] {
+                        if let Some(sx) = span_start_x {
+                            if cell.bg == span_bg {
+                                span_end_x = gx1;
+                                continue;
+                            } else {
+                                Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                            }
+                        }
+                        span_start_x = Some(gx0);
+                        span_end_x = gx1;
+                        span_bg = cell.bg;
+                    } else {
+                        if let Some(sx) = span_start_x.take() {
+                            Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                        }
+                    }
                 }
 
-                current_string.push(cell_char);
+                if let Some(sx) = span_start_x.take() {
+                    Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                }
             }
-            current_string.push('\n');
-        }
 
-        if !current_string.is_empty() {
-            let attrs = glyphon::Attrs::new()
-                .family(glyphon::Family::Monospace)
-                .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
-            spans.push((current_string, attrs));
-        }
+            self.bg_vertex_count = bg_vertices.len() as u32;
+            if self.bg_vertex_count > 0 {
+                self.queue.write_buffer(&self.bg_vertex_buf, 0, bytemuck::cast_slice(&bg_vertices));
+            }
 
-        self.text_buffer.set_rich_text(
-            &mut self.font_system,
-            spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
-            glyphon::Attrs::new().family(glyphon::Family::Monospace),
-            glyphon::Shaping::Advanced,
-        );
-        self.text_buffer.shape_until_scroll(&mut self.font_system, false);
+            terminal.clear_dirty();
+        }
 
         self.text_renderer.prepare(
             &self.device,
@@ -296,78 +371,6 @@ impl<'a> WgpuState<'a> {
                 label: Some("Render Encoder"),
             });
 
-        let cell_height = CELL_HEIGHT;
-        let start_x = PADDING;
-        let start_y = PADDING;
-        let screen_w = self.config.width as f32;
-        let screen_h = self.config.height as f32;
-
-        let mut bg_vertices: Vec<BgVertex> = Vec::new();
-
-        // Drive backgrounds from actual shaped glyph positions.
-        // Each LayoutRun corresponds to a grid row; each glyph index ≈ column.
-        // Merge consecutive glyphs with the same bg color into a single quad.
-        for run in self.text_buffer.layout_runs() {
-            let row_idx = run.line_i;
-            if row_idx >= terminal.rows { continue; }
-
-            let py = start_y + (row_idx as f32) * cell_height;
-
-            let mut span_start_x: Option<f32> = None;
-            let mut span_end_x = 0.0_f32;
-            let mut span_bg: [u8; 3] = [12, 12, 12];
-
-            for (glyph_idx, glyph) in run.glyphs.iter().enumerate() {
-                let col = glyph_idx.min(terminal.cols - 1);
-                let cell = &terminal.grid[row_idx][col];
-
-                let gx0 = start_x + glyph.x;
-                let gx1 = gx0 + glyph.w;
-
-                // For full-block characters, emit a fg-colored quad
-                // so it fills the exact same dimensions as our bg quads.
-                let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
-                if is_block && cell.fg != [200, 200, 200] {
-                    Self::push_bg_quad(&mut bg_vertices, gx0, gx1, py, cell_height, cell.fg, screen_w, screen_h);
-                }
-
-                if cell.bg != [12, 12, 12] {
-                    if let Some(sx) = span_start_x {
-                        if cell.bg == span_bg {
-                            // Extend current span
-                            span_end_x = gx1;
-                            continue;
-                        } else {
-                            // Emit previous span
-                            Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
-                        }
-                    }
-                    span_start_x = Some(gx0);
-                    span_end_x = gx1;
-                    span_bg = cell.bg;
-                } else {
-                    if let Some(sx) = span_start_x.take() {
-                        Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
-                    }
-                }
-            }
-
-            if let Some(sx) = span_start_x.take() {
-                Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
-            }
-        }
-
-
-        let bg_buffer = if !bg_vertices.is_empty() {
-            Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("BG Buffer"),
-                contents: bytemuck::cast_slice(&bg_vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }))
-        } else {
-            None
-        };
-
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -389,10 +392,10 @@ impl<'a> WgpuState<'a> {
                 timestamp_writes: None,
             });
 
-            if let Some(buf) = &bg_buffer {
+            if self.bg_vertex_count > 0 {
                 render_pass.set_pipeline(&self.bg_pipeline);
-                render_pass.set_vertex_buffer(0, buf.slice(..));
-                render_pass.draw(0..bg_vertices.len() as u32, 0..1);
+                render_pass.set_vertex_buffer(0, self.bg_vertex_buf.slice(..));
+                render_pass.draw(0..self.bg_vertex_count, 0..1);
             }
 
             self.text_renderer.render(&self.text_atlas, &self.viewport, &mut render_pass).unwrap();
