@@ -9,11 +9,25 @@ use winit::{
 };
 use std::sync::Arc;
 use crate::pty::Pty;
+use crate::terminal::Terminal;
+use vte::Parser;
 
-#[derive(Default)]
 pub struct App<'a> {
     pub state: Option<WgpuState<'a>>,
     pub pty: Option<Pty>,
+    pub terminal: Terminal,
+    pub parser: Parser,
+}
+
+impl<'a> Default for App<'a> {
+    fn default() -> Self {
+        Self {
+            state: None,
+            pty: None,
+            terminal: Terminal::new(80, 24),
+            parser: Parser::new(),
+        }
+    }
 }
 
 impl<'a> ApplicationHandler for App<'a> {
@@ -53,13 +67,22 @@ impl<'a> ApplicationHandler for App<'a> {
                 state.window().request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(pty) = &self.pty {
+                if let Some(pty) = &mut self.pty {
+                    let mut has_output = false;
                     while let Ok(bytes) = pty.rx.try_recv() {
+                        for byte in bytes.iter() {
+                            self.parser.advance(&mut self.terminal, *byte);
+                        }
+                        
+                        // Debug print to console alongside terminal grid parsing
                         if let Ok(text) = String::from_utf8(bytes.clone()) {
                             print!("{}", text);
-                        } else {
-                            print!("{:?}", bytes);
                         }
+                        has_output = true;
+                    }
+                    if has_output {
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
                     }
                 }
 
@@ -71,6 +94,28 @@ impl<'a> ApplicationHandler for App<'a> {
                         event_loop.exit();
                     }
                     Err(e) => error!("{:?}", e),
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == winit::event::ElementState::Pressed {
+                    if let Some(pty) = &mut self.pty {
+                        if let Some(text) = &event.text {
+                            let _ = pty.write(text.as_bytes());
+                        } else {
+                            use winit::keyboard::{Key, NamedKey};
+                            match &event.logical_key {
+                                Key::Named(NamedKey::Enter) => { let _ = pty.write(b"\r"); },
+                                Key::Named(NamedKey::Backspace) => { let _ = pty.write(b"\x7f"); },
+                                Key::Named(NamedKey::Escape) => { let _ = pty.write(b"\x1b"); },
+                                Key::Named(NamedKey::Tab) => { let _ = pty.write(b"\t"); },
+                                Key::Named(NamedKey::ArrowUp) => { let _ = pty.write(b"\x1b[A"); },
+                                Key::Named(NamedKey::ArrowDown) => { let _ = pty.write(b"\x1b[B"); },
+                                Key::Named(NamedKey::ArrowRight) => { let _ = pty.write(b"\x1b[C"); },
+                                Key::Named(NamedKey::ArrowLeft) => { let _ = pty.write(b"\x1b[D"); },
+                                _ => {}
+                            }
+                        }
+                    }
                 }
             }
             _ => {}

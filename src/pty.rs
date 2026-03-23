@@ -2,11 +2,12 @@ use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::io::Read;
+use std::io::{Read, Write};
 
 pub struct Pty {
     pub pty_pair: PtyPair,
     pub rx: Receiver<Vec<u8>>,
+    pub writer: Box<dyn std::io::Write + Send>,
 }
 
 impl Pty {
@@ -30,6 +31,7 @@ impl Pty {
         // Set up a channel to send read bytes to the main thread
         let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
         
+        let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
 
         // Spawn a background thread to continually read from the PTY
@@ -54,6 +56,12 @@ impl Pty {
         Ok(Self {
             pty_pair: pair,
             rx,
+            writer,
         })
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> Result<()> {
+        self.writer.write_all(data)?;
+        Ok(())
     }
 }
