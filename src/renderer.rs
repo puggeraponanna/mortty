@@ -21,7 +21,7 @@ impl FontMetrics {
         buffer.set_text(
             font_system, 
             " ", 
-            glyphon::Attrs::new().family(glyphon::Family::Monospace), 
+            glyphon::Attrs::new().family(glyphon::Family::Name("FiraCode Nerd Font")), 
             glyphon::Shaping::Basic
         );
         buffer.shape_until_scroll(font_system, false);
@@ -355,7 +355,7 @@ impl<'a> WgpuState<'a> {
 
                     if cell.fg != current_fg && !is_first {
                         let attrs = glyphon::Attrs::new()
-                            .family(glyphon::Family::Monospace)
+                            .family(glyphon::Family::Name("FiraCode Nerd Font"))
                             .color(glyphon::Color::rgb(
                                 current_fg[0],
                                 current_fg[1],
@@ -376,7 +376,7 @@ impl<'a> WgpuState<'a> {
 
             if !current_string.is_empty() {
                 let attrs = glyphon::Attrs::new()
-                    .family(glyphon::Family::Monospace)
+                    .family(glyphon::Family::Name("FiraCode Nerd Font"))
                     .color(glyphon::Color::rgb(
                         current_fg[0],
                         current_fg[1],
@@ -388,7 +388,7 @@ impl<'a> WgpuState<'a> {
             self.text_buffer.set_rich_text(
                 &mut self.font_system,
                 spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
-                glyphon::Attrs::new().family(glyphon::Family::Monospace),
+                glyphon::Attrs::new().family(glyphon::Family::Name("FiraCode Nerd Font")),
                 glyphon::Shaping::Advanced,
             );
             self.text_buffer
