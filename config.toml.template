@@ -1,0 +1,8 @@
+# mortty Configuration Template
+# You can copy this to:
+#   - ~/.config/mortty/config.toml
+#   - ~/Library/Application Support/mortty/config.toml (on macOS)
+
+font_family = "FiraCode Nerd Font"
+font_size = 22.0
+padding = 10.0

@@ -21,24 +21,33 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        let config_path = ProjectDirs::from("", "", "mortty")
-            .map(|dirs| dirs.config_dir().join("config.toml"));
+        // Try multiple locations:
+        // 1. ~/.config/mortty/config.toml (XDG/Handy for terminal users)
+        // 2. ~/Library/Application Support/mortty/config.toml (macOS Standard)
+        
+        let mut paths = Vec::new();
+        
+        // Potential XDG path
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".config").join("mortty").join("config.toml"));
+        }
+        
+        // Standard App Support path
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "mortty") {
+            paths.push(proj_dirs.config_dir().join("config.toml"));
+        }
 
-        if let Some(path) = config_path {
+        for path in paths {
             if path.exists() {
                 if let Ok(content) = fs::read_to_string(&path) {
                     if let Ok(config) = toml::from_str::<Config>(&content) {
-                        log::info!("Loaded config from {:?}", path);
+                        println!("Loaded config from {:?}", path);
                         return config;
-                    } else {
-                        log::warn!("Failed to parse config at {:?}, using defaults", path);
                     }
                 }
-            } else {
-                // Optionally create the default config file if it doesn't exist?
-                // For now, just return defaults.
             }
         }
+        
         Config::default()
     }
 }
