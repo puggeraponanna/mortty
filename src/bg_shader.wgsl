@@ -16,7 +16,20 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     return out;
 }
 
+// Convert a single sRGB channel [0,1] to linear light.
+// Required because wgpu writes shader output as linear to sRGB surfaces.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    let r = srgb_to_linear(in.color.r);
+    let g = srgb_to_linear(in.color.g);
+    let b = srgb_to_linear(in.color.b);
+    return vec4<f32>(r, g, b, 1.0);
 }

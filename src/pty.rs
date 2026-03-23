@@ -11,12 +11,12 @@ pub struct Pty {
 }
 
 impl Pty {
-    pub fn new(proxy: winit::event_loop::EventLoopProxy<()>) -> Result<Self> {
+    pub fn new(proxy: winit::event_loop::EventLoopProxy<()>, cols: u16, rows: u16) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
-            rows: 24,
-            cols: 80,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })?;
@@ -70,5 +70,14 @@ impl Pty {
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         self.writer.write_all(data)?;
         Ok(())
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let _ = self.pty_pair.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
     }
 }

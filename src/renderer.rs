@@ -4,6 +4,18 @@ use std::sync::Arc;
 use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, TextBounds, TextArea, Metrics};
 use wgpu::util::DeviceExt;
 
+pub const FONT_SIZE: f32 = 24.0;
+pub const CELL_HEIGHT: f32 = 30.0;
+pub const PADDING: f32 = 10.0;
+
+/// Compute (cols, rows) from a physical pixel size and font metrics.
+pub fn cols_rows_from_size(size: PhysicalSize<u32>) -> (usize, usize) {
+    let cell_w = FONT_SIZE * 0.6;
+    let cols = ((size.width as f32 - PADDING * 2.0) / cell_w).floor() as usize;
+    let rows = ((size.height as f32 - PADDING * 2.0) / CELL_HEIGHT).floor() as usize;
+    (cols.max(20), rows.max(5))
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BgVertex {
@@ -103,7 +115,7 @@ impl<'a> WgpuState<'a> {
         let text_renderer = TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
         let viewport = glyphon::Viewport::new(&device, &cache);
 
-        let mut text_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(16.0, 20.0));
+        let mut text_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, CELL_HEIGHT));
         text_buffer.set_size(&mut font_system, Some(size.width as f32), Some(size.height as f32));
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("bg_shader.wgsl"));
@@ -163,6 +175,31 @@ impl<'a> WgpuState<'a> {
             viewport,
             bg_pipeline,
         }
+    }
+
+    fn push_bg_quad(
+        verts: &mut Vec<BgVertex>,
+        x0: f32, x1: f32,
+        py: f32, cell_h: f32,
+        bg: [u8; 3],
+        sw: f32, sh: f32,
+    ) {
+        let r = bg[0] as f32 / 255.0;
+        let g = bg[1] as f32 / 255.0;
+        let b = bg[2] as f32 / 255.0;
+        let color = [r, g, b];
+
+        let cx0 = (x0 / sw) * 2.0 - 1.0;
+        let cy0 = 1.0 - (py / sh) * 2.0;
+        let cx1 = (x1 / sw) * 2.0 - 1.0;
+        let cy1 = 1.0 - ((py + cell_h) / sh) * 2.0;
+
+        verts.push(BgVertex { position: [cx0, cy0], color });
+        verts.push(BgVertex { position: [cx0, cy1], color });
+        verts.push(BgVertex { position: [cx1, cy0], color });
+        verts.push(BgVertex { position: [cx1, cy0], color });
+        verts.push(BgVertex { position: [cx0, cy1], color });
+        verts.push(BgVertex { position: [cx1, cy1], color });
     }
 
     pub fn window(&self) -> &Window {
@@ -256,50 +293,60 @@ impl<'a> WgpuState<'a> {
                 label: Some("Render Encoder"),
             });
 
-        // Background rect calculation using actual glyph layout positions
-        let font_size = 16.0_f32;
-        let cell_height = 20.0_f32;
-        let start_x = 10.0_f32;
-        let start_y = 10.0_f32;
+        let cell_height = CELL_HEIGHT;
+        let start_x = PADDING;
+        let start_y = PADDING;
         let screen_w = self.config.width as f32;
         let screen_h = self.config.height as f32;
 
-        // Build a map from (row, col) -> x_start, x_end using actual glyph advances
-        let cols = terminal.cols;
-        let rows = terminal.rows;
-        let cell_w = font_size * 0.6; // conservative em-width estimate for monospace
-
         let mut bg_vertices: Vec<BgVertex> = Vec::new();
 
-        for (r, row) in terminal.grid.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
+        // Drive backgrounds from actual shaped glyph positions.
+        // Each LayoutRun corresponds to a grid row; each glyph index ≈ column.
+        // Merge consecutive glyphs with the same bg color into a single quad.
+        for run in self.text_buffer.layout_runs() {
+            let row_idx = run.line_i;
+            if row_idx >= terminal.rows { continue; }
+
+            let py = start_y + (row_idx as f32) * cell_height;
+
+            let mut span_start_x: Option<f32> = None;
+            let mut span_end_x = 0.0_f32;
+            let mut span_bg: [u8; 3] = [12, 12, 12];
+
+            for (glyph_idx, glyph) in run.glyphs.iter().enumerate() {
+                let col = glyph_idx.min(terminal.cols - 1);
+                let cell = &terminal.grid[row_idx][col];
+
+                let gx0 = start_x + glyph.x;
+                let gx1 = gx0 + glyph.w;
+
                 if cell.bg != [12, 12, 12] {
-                    let px = start_x + (c as f32) * cell_w;
-                    let py = start_y + (r as f32) * cell_height;
-
-                    let bg_r = cell.bg[0] as f32 / 255.0;
-                    let bg_g = cell.bg[1] as f32 / 255.0;
-                    let bg_b = cell.bg[2] as f32 / 255.0;
-
-                    let x0 = (px / screen_w) * 2.0 - 1.0;
-                    let y0 = 1.0 - (py / screen_h) * 2.0;
-                    let x1 = ((px + cell_w) / screen_w) * 2.0 - 1.0;
-                    let y1 = 1.0 - ((py + cell_height) / screen_h) * 2.0;
-
-                    let color = [bg_r, bg_g, bg_b];
-                    bg_vertices.push(BgVertex { position: [x0, y0], color });
-                    bg_vertices.push(BgVertex { position: [x0, y1], color });
-                    bg_vertices.push(BgVertex { position: [x1, y0], color });
-
-                    bg_vertices.push(BgVertex { position: [x1, y0], color });
-                    bg_vertices.push(BgVertex { position: [x0, y1], color });
-                    bg_vertices.push(BgVertex { position: [x1, y1], color });
+                    if let Some(sx) = span_start_x {
+                        if cell.bg == span_bg {
+                            // Extend current span
+                            span_end_x = gx1;
+                            continue;
+                        } else {
+                            // Emit previous span
+                            Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                        }
+                    }
+                    span_start_x = Some(gx0);
+                    span_end_x = gx1;
+                    span_bg = cell.bg;
+                } else {
+                    if let Some(sx) = span_start_x.take() {
+                        Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
+                    }
                 }
+            }
+
+            if let Some(sx) = span_start_x.take() {
+                Self::push_bg_quad(&mut bg_vertices, sx, span_end_x, py, cell_height, span_bg, screen_w, screen_h);
             }
         }
 
-        // Suppress unused variable warnings for unconstrained grid vars
-        let _ = (cols, rows);
 
         let bg_buffer = if !bg_vertices.is_empty() {
             Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

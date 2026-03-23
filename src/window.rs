@@ -1,4 +1,4 @@
-use crate::renderer::WgpuState;
+use crate::renderer::{WgpuState, cols_rows_from_size};
 use log::{error, info};
 use winit::{
     application::ApplicationHandler,
@@ -32,11 +32,16 @@ impl<'a> ApplicationHandler for App<'a> {
         if self.state.is_none() {
             let window_attributes = Window::default_attributes()
                 .with_title("mortty - New Gen Terminal")
-                .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+                .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 700.0));
             
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-            
-            self.pty = Some(Pty::new(self.proxy.clone()).expect("Failed to spawn PTY subprocess"));
+            let phys = window.inner_size();
+            let (cols, rows) = cols_rows_from_size(phys);
+
+            // Resize terminal grid to match window size
+            self.terminal = crate::terminal::Terminal::new(cols, rows);
+
+            self.pty = Some(Pty::new(self.proxy.clone(), cols as u16, rows as u16).expect("Failed to spawn PTY subprocess"));
             
             let state = pollster::block_on(WgpuState::new(window));
             self.state = Some(state);
@@ -61,6 +66,11 @@ impl<'a> ApplicationHandler for App<'a> {
             }
             WindowEvent::Resized(physical_size) => {
                 state.resize(physical_size);
+                let (cols, rows) = cols_rows_from_size(physical_size);
+                self.terminal.resize(cols, rows);
+                if let Some(pty) = &self.pty {
+                    pty.resize(cols as u16, rows as u16);
+                }
                 state.window().request_redraw();
             }
             WindowEvent::RedrawRequested => {

@@ -1,5 +1,43 @@
 use vte::{Params, Perform};
 
+/// Convert an xterm 256-color index to (r, g, b).
+fn ansi_256_to_rgb(n: u8) -> [u8; 3] {
+    match n {
+        // Standard 16 colors
+        0  => [12, 12, 12],
+        1  => [205, 49, 49],
+        2  => [13, 188, 121],
+        3  => [229, 229, 16],
+        4  => [36, 114, 200],
+        5  => [188, 63, 188],
+        6  => [17, 168, 205],
+        7  => [229, 229, 229],
+        8  => [102, 102, 102],
+        9  => [241, 76, 76],
+        10 => [35, 209, 139],
+        11 => [245, 245, 67],
+        12 => [59, 142, 234],
+        13 => [214, 112, 214],
+        14 => [41, 184, 219],
+        15 => [255, 255, 255],
+        // 6×6×6 color cube: indices 16–231
+        16..=231 => {
+            let idx = n - 16;
+            let b = idx % 6;
+            let g = (idx / 6) % 6;
+            let r = idx / 36;
+            let f = |x: u8| if x == 0 { 0 } else { 55 + x * 40 };
+            [f(r), f(g), f(b)]
+        }
+        // Grayscale ramp: indices 232–255
+        232..=255 => {
+            let v = 8 + (n - 232) as u16 * 10;
+            let v = v as u8;
+            [v, v, v]
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Cell {
     pub c: char,
@@ -39,6 +77,20 @@ impl Terminal {
             current_fg: [200, 200, 200],
             current_bg: [12, 12, 12],
         }
+    }
+
+    pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
+        let mut new_grid = vec![vec![Cell::default(); new_cols]; new_rows];
+        for r in 0..self.rows.min(new_rows) {
+            for c in 0..self.cols.min(new_cols) {
+                new_grid[r][c] = self.grid[r][c].clone();
+            }
+        }
+        self.grid = new_grid;
+        self.cols = new_cols;
+        self.rows = new_rows;
+        self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
+        self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
     }
 }
 
@@ -233,7 +285,8 @@ impl Perform for Terminal {
                         37 => { fg = [229, 229, 229]; i += 1; }
                         38 => {
                             if i + 2 < all_params.len() && all_params[i+1] == 5 {
-                                // 256-color fallback (ignored for now)
+                                // 256-color fg [38;5;N]
+                                fg = ansi_256_to_rgb(all_params[i+2] as u8);
                                 i += 3;
                             } else if i + 4 < all_params.len() && all_params[i+1] == 2 {
                                 // true-color [38;2;R;G;B]
@@ -254,6 +307,8 @@ impl Perform for Terminal {
                         47 => { bg = [229, 229, 229]; i += 1; }
                         48 => {
                             if i + 2 < all_params.len() && all_params[i+1] == 5 {
+                                // 256-color bg [48;5;N]
+                                bg = ansi_256_to_rgb(all_params[i+2] as u8);
                                 i += 3;
                             } else if i + 4 < all_params.len() && all_params[i+1] == 2 {
                                 // true-color [48;2;R;G;B]
