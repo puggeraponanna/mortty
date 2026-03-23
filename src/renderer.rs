@@ -225,7 +225,10 @@ impl<'a> WgpuState<'a> {
 
         for row in &terminal.grid {
             for cell in row {
-                let cell_char = if cell.c == '\0' { ' ' } else { cell.c };
+                // Block-filling chars (█ etc.) are rendered as fg-colored WGSL quads
+                // so they fill the full cell height. Replace with space for glyphon.
+                let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
+                let cell_char = if cell.c == '\0' || is_block { ' ' } else { cell.c };
                 
                 if cell.fg != current_fg && !is_first {
                     let attrs = glyphon::Attrs::new()
@@ -320,6 +323,13 @@ impl<'a> WgpuState<'a> {
 
                 let gx0 = start_x + glyph.x;
                 let gx1 = gx0 + glyph.w;
+
+                // For full-block characters, emit a fg-colored quad
+                // so it fills the exact same dimensions as our bg quads.
+                let is_block = matches!(cell.c, '█' | '▀' | '▄' | '▌' | '▐' | '▆' | '▇');
+                if is_block && cell.fg != [200, 200, 200] {
+                    Self::push_bg_quad(&mut bg_vertices, gx0, gx1, py, cell_height, cell.fg, screen_w, screen_h);
+                }
 
                 if cell.bg != [12, 12, 12] {
                     if let Some(sx) = span_start_x {
