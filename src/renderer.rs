@@ -2,15 +2,58 @@ use glyphon::{FontSystem, Metrics, SwashCache, TextArea, TextAtlas, TextBounds, 
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
-pub const FONT_SIZE: f32 = 24.0;
-pub const CELL_HEIGHT: f32 = 16.0;
 pub const PADDING: f32 = 10.0;
 
+#[derive(Clone, Copy, Debug)]
+pub struct FontMetrics {
+    pub cell_w: f32,
+    pub cell_h: f32,
+    pub ascent: f32,
+    pub font_size: f32,
+}
+
+impl FontMetrics {
+    pub fn new(font_system: &mut FontSystem, font_size: f32) -> Self {
+        let mut buffer = glyphon::Buffer::new(font_system, Metrics::new(font_size, font_size * 1.1));
+        buffer.set_size(font_system, Some(100.0), Some(100.0));
+        
+        // Use a space to measure width and ascent/descent
+        buffer.set_text(
+            font_system, 
+            " ", 
+            glyphon::Attrs::new().family(glyphon::Family::Monospace), 
+            glyphon::Shaping::Basic
+        );
+        buffer.shape_until_scroll(font_system, false);
+
+        let metrics = buffer.metrics();
+        let cell_h = metrics.line_height;
+        let mut ascent = cell_h * 0.8; // default fallback
+
+        if let Some(run) = buffer.layout_runs().next() {
+            ascent = run.line_y;
+        }
+        
+        let mut cell_w = font_size * 0.6; // fallback
+        if let Some(run) = buffer.layout_runs().next() {
+            if let Some(glyph) = run.glyphs.first() {
+                cell_w = glyph.w;
+            }
+        }
+
+        Self {
+            cell_w,
+            cell_h,
+            ascent,
+            font_size,
+        }
+    }
+}
+
 /// Compute (cols, rows) from a physical pixel size and font metrics.
-pub fn cols_rows_from_size(size: PhysicalSize<u32>) -> (usize, usize) {
-    let cell_w = FONT_SIZE * 0.5;
-    let cols = ((size.width as f32 - PADDING * 2.0) / cell_w).floor() as usize;
-    let rows = ((size.height as f32 - PADDING * 2.0) / CELL_HEIGHT).floor() as usize;
+pub fn cols_rows_from_size(size: PhysicalSize<u32>, metrics: &FontMetrics) -> (usize, usize) {
+    let cols = ((size.width as f32 - PADDING * 2.0) / metrics.cell_w).floor() as usize;
+    let rows = ((size.height as f32 - PADDING * 2.0) / metrics.cell_h).floor() as usize;
     (cols.max(20), rows.max(5))
 }
 
@@ -43,7 +86,6 @@ pub struct WgpuState<'a> {
     pub window: Arc<Window>,
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
-    pub cache: glyphon::Cache,
     pub text_atlas: TextAtlas,
     pub text_renderer: TextRenderer,
     pub text_buffer: glyphon::Buffer,
@@ -52,6 +94,7 @@ pub struct WgpuState<'a> {
     /// Persistent background vertex buffer — reused every frame
     pub bg_vertex_buf: wgpu::Buffer,
     pub bg_vertex_count: u32,
+    pub font_metrics: FontMetrics,
 }
 
 impl<'a> WgpuState<'a> {
@@ -136,8 +179,12 @@ impl<'a> WgpuState<'a> {
         );
         let viewport = glyphon::Viewport::new(&device, &cache);
 
-        let mut text_buffer =
-            glyphon::Buffer::new(&mut font_system, Metrics::new(FONT_SIZE, CELL_HEIGHT));
+        let font_metrics = FontMetrics::new(&mut font_system, 22.0);
+
+        let mut text_buffer = glyphon::Buffer::new(
+            &mut font_system,
+            Metrics::new(font_metrics.font_size, font_metrics.cell_h),
+        );
         text_buffer.set_size(
             &mut font_system,
             Some(size.width as f32),
@@ -204,7 +251,6 @@ impl<'a> WgpuState<'a> {
             window,
             font_system,
             swash_cache,
-            cache,
             text_atlas,
             text_renderer,
             text_buffer,
@@ -212,6 +258,7 @@ impl<'a> WgpuState<'a> {
             bg_pipeline,
             bg_vertex_buf,
             bg_vertex_count: 0,
+            font_metrics,
         }
     }
 
@@ -308,7 +355,7 @@ impl<'a> WgpuState<'a> {
 
                     if cell.fg != current_fg && !is_first {
                         let attrs = glyphon::Attrs::new()
-                            .family(glyphon::Family::Name("FiraCode Nerd Font"))
+                            .family(glyphon::Family::Monospace)
                             .color(glyphon::Color::rgb(
                                 current_fg[0],
                                 current_fg[1],
@@ -329,7 +376,7 @@ impl<'a> WgpuState<'a> {
 
             if !current_string.is_empty() {
                 let attrs = glyphon::Attrs::new()
-                    .family(glyphon::Family::Name("FiraCode Nerd Font"))
+                    .family(glyphon::Family::Monospace)
                     .color(glyphon::Color::rgb(
                         current_fg[0],
                         current_fg[1],
@@ -341,7 +388,7 @@ impl<'a> WgpuState<'a> {
             self.text_buffer.set_rich_text(
                 &mut self.font_system,
                 spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
-                glyphon::Attrs::new().family(glyphon::Family::Name("FiraCode Nerd Font")),
+                glyphon::Attrs::new().family(glyphon::Family::Monospace),
                 glyphon::Shaping::Advanced,
             );
             self.text_buffer
@@ -349,10 +396,10 @@ impl<'a> WgpuState<'a> {
             let _shaping_done = _start.elapsed();
 
             // Rebuild background vertices
-            let _bg_start = std::time::Instant::now();
-            let cell_height = CELL_HEIGHT;
+            let cell_height = self.font_metrics.cell_h;
+            let cell_width = self.font_metrics.cell_w;
             let start_x = PADDING;
-            let start_y = PADDING + (CELL_HEIGHT - FONT_SIZE) / 2.0;
+            let start_y = PADDING;
             let screen_w = self.config.width as f32;
             let screen_h = self.config.height as f32;
 
@@ -364,14 +411,17 @@ impl<'a> WgpuState<'a> {
                     continue;
                 }
 
-                let py = start_y + run.line_y - cell_height - (FONT_SIZE - CELL_HEIGHT) / 2.0 - 2.0;
+                let py = start_y + run.line_y - self.font_metrics.ascent;
 
                 let mut span_start_x: Option<f32> = None;
                 let mut span_end_x = 0.0_f32;
                 let mut span_bg: [u8; 3] = [12, 12, 12];
 
-                for (glyph_idx, glyph) in run.glyphs.iter().enumerate() {
-                    let col = glyph_idx.min(terminal.cols - 1);
+                for glyph in run.glyphs.iter() {
+                    let col = (glyph.x / cell_width).round() as usize;
+                    if col >= terminal.cols {
+                        continue;
+                    }
                     let cell = &terminal.grid[row_idx][col];
 
                     let gx0 = start_x + glyph.x;
@@ -461,7 +511,7 @@ impl<'a> WgpuState<'a> {
                 [TextArea {
                     buffer: &self.text_buffer,
                     left: 10.0,
-                    top: 10.0 + (CELL_HEIGHT - FONT_SIZE) / 2.0, // Center vertically
+                    top: 10.0,
                     scale: 1.0,
                     bounds: TextBounds {
                         left: 0,

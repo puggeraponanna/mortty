@@ -19,6 +19,7 @@ pub struct App<'a> {
     pub terminal: Terminal,
     pub parser: Parser,
     pub proxy: winit::event_loop::EventLoopProxy<ControlEvent>,
+    pub modifiers: winit::keyboard::ModifiersState,
 }
 
 impl<'a> App<'a> {
@@ -65,7 +66,11 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
             
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             let phys = window.inner_size();
-            let (cols, rows) = cols_rows_from_size(phys);
+            
+            // Need font metrics to calculate cols/rows
+            let mut font_system = glyphon::FontSystem::new();
+            let metrics = crate::renderer::FontMetrics::new(&mut font_system, 22.0);
+            let (cols, rows) = cols_rows_from_size(phys, &metrics);
 
             // Resize terminal grid to match window size
             self.terminal = crate::terminal::Terminal::new(cols, rows);
@@ -95,7 +100,7 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
             }
             WindowEvent::Resized(physical_size) => {
                 state.resize(physical_size);
-                let (cols, rows) = cols_rows_from_size(physical_size);
+                let (cols, rows) = cols_rows_from_size(physical_size, &state.font_metrics);
                 self.terminal.resize(cols, rows);
                 if let Some(pty) = &self.pty {
                     pty.resize(cols as u16, rows as u16);
@@ -115,9 +120,26 @@ impl<'a> ApplicationHandler<ControlEvent> for App<'a> {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == winit::event::ElementState::Pressed {
                     if let Some(pty) = &mut self.pty {
+                        // Handle Control keys
+                        if self.modifiers.control_key() {
+                            use winit::keyboard::Key;
+                            if let Key::Character(c) = &event.logical_key {
+                                let c = c.to_lowercase();
+                                let b = c.as_bytes();
+                                if b.len() == 1 && b[0] >= b'a' && b[0] <= b'z' {
+                                    let control_char = b[0] - b'a' + 1;
+                                    let _ = pty.write(&[control_char]);
+                                    return;
+                                }
+                            }
+                        }
+
                         if let Some(text) = &event.text {
                             let _ = pty.write(text.as_bytes());
                         } else {
@@ -164,6 +186,7 @@ pub fn run() -> Result<(), EventLoopError> {
         terminal: Terminal::new(80, 24), // Initial size will be updated in resumed()
         parser: Parser::new(),
         proxy,
+        modifiers: winit::keyboard::ModifiersState::default(),
     };
     event_loop.run_app(&mut app)
 }
