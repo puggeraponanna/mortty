@@ -2,6 +2,26 @@ use winit::window::Window;
 use winit::dpi::PhysicalSize;
 use std::sync::Arc;
 use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, TextBounds, TextArea, Metrics};
+use wgpu::util::DeviceExt;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BgVertex {
+    pub position: [f32; 2],
+    pub color: [f32; 3],
+}
+
+const BG_ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3];
+
+impl BgVertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<BgVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &BG_ATTRIBS,
+        }
+    }
+}
 
 pub struct WgpuState<'a> {
     pub surface: wgpu::Surface<'a>,
@@ -17,6 +37,7 @@ pub struct WgpuState<'a> {
     pub text_renderer: TextRenderer,
     pub text_buffer: glyphon::Buffer,
     pub viewport: glyphon::Viewport,
+    pub bg_pipeline: wgpu::RenderPipeline,
 }
 
 impl<'a> WgpuState<'a> {
@@ -85,6 +106,47 @@ impl<'a> WgpuState<'a> {
         let mut text_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(16.0, 20.0));
         text_buffer.set_size(&mut font_system, Some(size.width as f32), Some(size.height as f32));
 
+        let shader = device.create_shader_module(wgpu::include_wgsl!("bg_shader.wgsl"));
+        let bg_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("BG Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        
+        let bg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("BG Pipeline"),
+            layout: Some(&bg_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[BgVertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Self {
             surface,
             device,
@@ -99,6 +161,7 @@ impl<'a> WgpuState<'a> {
             text_renderer,
             text_buffer,
             viewport,
+            bg_pipeline,
         }
     }
 
@@ -118,19 +181,43 @@ impl<'a> WgpuState<'a> {
     }
 
     pub fn render(&mut self, terminal: &crate::terminal::Terminal) -> Result<(), wgpu::SurfaceError> {
-        let mut content = String::with_capacity(terminal.rows * (terminal.cols + 1));
+        let mut spans: Vec<(String, glyphon::Attrs<'static>)> = Vec::new();
+        let mut current_string = String::new();
+        let mut current_fg = [200, 200, 200];
+        let mut is_first = true;
+
         for row in &terminal.grid {
             for cell in row {
-                let current_char = if cell.c == '\0' { ' ' } else { cell.c };
-                content.push(current_char);
+                let cell_char = if cell.c == '\0' { ' ' } else { cell.c };
+                
+                if cell.fg != current_fg && !is_first {
+                    let attrs = glyphon::Attrs::new()
+                        .family(glyphon::Family::Monospace)
+                        .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
+                    spans.push((current_string, attrs));
+                    current_string = String::new();
+                    current_fg = cell.fg;
+                } else if is_first {
+                    current_fg = cell.fg;
+                    is_first = false;
+                }
+
+                current_string.push(cell_char);
             }
-            content.push('\n');
+            current_string.push('\n');
         }
 
-        self.text_buffer.set_text(
+        if !current_string.is_empty() {
+            let attrs = glyphon::Attrs::new()
+                .family(glyphon::Family::Monospace)
+                .color(glyphon::Color::rgb(current_fg[0], current_fg[1], current_fg[2]));
+            spans.push((current_string, attrs));
+        }
+
+        self.text_buffer.set_rich_text(
             &mut self.font_system,
-            &content,
-            glyphon::Attrs::new().family(glyphon::Family::Monospace).color(glyphon::Color::rgb(200, 200, 200)),
+            spans.iter().map(|(s, attrs)| (s.as_str(), *attrs)),
+            glyphon::Attrs::new().family(glyphon::Family::Monospace),
             glyphon::Shaping::Advanced,
         );
         self.text_buffer.shape_until_scroll(&mut self.font_system, false);
@@ -169,6 +256,61 @@ impl<'a> WgpuState<'a> {
                 label: Some("Render Encoder"),
             });
 
+        // Background rect calculation using actual glyph layout positions
+        let font_size = 16.0_f32;
+        let cell_height = 20.0_f32;
+        let start_x = 10.0_f32;
+        let start_y = 10.0_f32;
+        let screen_w = self.config.width as f32;
+        let screen_h = self.config.height as f32;
+
+        // Build a map from (row, col) -> x_start, x_end using actual glyph advances
+        let cols = terminal.cols;
+        let rows = terminal.rows;
+        let cell_w = font_size * 0.6; // conservative em-width estimate for monospace
+
+        let mut bg_vertices: Vec<BgVertex> = Vec::new();
+
+        for (r, row) in terminal.grid.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if cell.bg != [12, 12, 12] {
+                    let px = start_x + (c as f32) * cell_w;
+                    let py = start_y + (r as f32) * cell_height;
+
+                    let bg_r = cell.bg[0] as f32 / 255.0;
+                    let bg_g = cell.bg[1] as f32 / 255.0;
+                    let bg_b = cell.bg[2] as f32 / 255.0;
+
+                    let x0 = (px / screen_w) * 2.0 - 1.0;
+                    let y0 = 1.0 - (py / screen_h) * 2.0;
+                    let x1 = ((px + cell_w) / screen_w) * 2.0 - 1.0;
+                    let y1 = 1.0 - ((py + cell_height) / screen_h) * 2.0;
+
+                    let color = [bg_r, bg_g, bg_b];
+                    bg_vertices.push(BgVertex { position: [x0, y0], color });
+                    bg_vertices.push(BgVertex { position: [x0, y1], color });
+                    bg_vertices.push(BgVertex { position: [x1, y0], color });
+
+                    bg_vertices.push(BgVertex { position: [x1, y0], color });
+                    bg_vertices.push(BgVertex { position: [x0, y1], color });
+                    bg_vertices.push(BgVertex { position: [x1, y1], color });
+                }
+            }
+        }
+
+        // Suppress unused variable warnings for unconstrained grid vars
+        let _ = (cols, rows);
+
+        let bg_buffer = if !bg_vertices.is_empty() {
+            Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("BG Buffer"),
+                contents: bytemuck::cast_slice(&bg_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }))
+        } else {
+            None
+        };
+
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -189,6 +331,12 @@ impl<'a> WgpuState<'a> {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+
+            if let Some(buf) = &bg_buffer {
+                render_pass.set_pipeline(&self.bg_pipeline);
+                render_pass.set_vertex_buffer(0, buf.slice(..));
+                render_pass.draw(0..bg_vertices.len() as u32, 0..1);
+            }
 
             self.text_renderer.render(&self.text_atlas, &self.viewport, &mut render_pass).unwrap();
         }

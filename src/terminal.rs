@@ -1,8 +1,20 @@
 use vte::{Params, Perform};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Cell {
     pub c: char,
+    pub fg: [u8; 3],
+    pub bg: [u8; 3],
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self {
+            c: '\0',
+            fg: [200, 200, 200],
+            bg: [12, 12, 12],
+        }
+    }
 }
 
 pub struct Terminal {
@@ -11,6 +23,8 @@ pub struct Terminal {
     pub cursor_row: usize,
     pub cols: usize,
     pub rows: usize,
+    pub current_fg: [u8; 3],
+    pub current_bg: [u8; 3],
 }
 
 impl Terminal {
@@ -22,6 +36,8 @@ impl Terminal {
             cursor_row: 0,
             cols,
             rows,
+            current_fg: [200, 200, 200],
+            current_bg: [12, 12, 12],
         }
     }
 }
@@ -30,6 +46,8 @@ impl Perform for Terminal {
     fn print(&mut self, c: char) {
         if self.cursor_col < self.cols && self.cursor_row < self.rows {
             self.grid[self.cursor_row][self.cursor_col].c = c;
+            self.grid[self.cursor_row][self.cursor_col].fg = self.current_fg;
+            self.grid[self.cursor_row][self.cursor_col].bg = self.current_bg;
             self.cursor_col += 1;
         }
     }
@@ -42,7 +60,7 @@ impl Perform for Terminal {
                         self.grid[r] = self.grid[r + 1].clone();
                     }
                     for c in 0..self.cols {
-                        self.grid[self.rows - 1][c].c = '\0';
+                        self.grid[self.rows - 1][c] = Cell::default();
                     }
                 } else {
                     self.cursor_row += 1;
@@ -74,18 +92,18 @@ impl Perform for Terminal {
                 match param {
                     0 => {
                         for c in self.cursor_col..self.cols {
-                            self.grid[self.cursor_row][c].c = '\0';
+                            self.grid[self.cursor_row][c] = Cell::default();
                         }
                         for r in self.cursor_row + 1..self.rows {
                             for c in 0..self.cols {
-                                self.grid[r][c].c = '\0';
+                                self.grid[r][c] = Cell::default();
                             }
                         }
                     }
                     2 | 3 => {
                         for r in 0..self.rows {
                             for c in 0..self.cols {
-                                self.grid[r][c].c = '\0';
+                                self.grid[r][c] = Cell::default();
                             }
                         }
                         if param == 2 {
@@ -102,12 +120,17 @@ impl Perform for Terminal {
                 match param {
                     0 => {
                         for c in self.cursor_col..self.cols {
-                            self.grid[self.cursor_row][c].c = '\0';
+                            self.grid[self.cursor_row][c] = Cell::default();
+                        }
+                    }
+                    1 => {
+                        for c in 0..=self.cursor_col {
+                            self.grid[self.cursor_row][c] = Cell::default();
                         }
                     }
                     2 => {
                         for c in 0..self.cols {
-                            self.grid[self.cursor_row][c].c = '\0';
+                            self.grid[self.cursor_row][c] = Cell::default();
                         }
                     }
                     _ => {}
@@ -181,12 +204,79 @@ impl Perform for Terminal {
                 let col = self.cursor_col;
                 for c in col..col + erase_count {
                     if c < self.cols {
-                        self.grid[row][c].c = '\0';
+                        self.grid[row][c] = Cell::default();
                     }
                 }
             }
             'm' => {
-                // SGR: Colors and styles
+                let mut fg = self.current_fg;
+                let mut bg = self.current_bg;
+
+                if params.is_empty() {
+                    fg = [200, 200, 200];
+                    bg = [12, 12, 12];
+                }
+
+                let all_params: Vec<u16> = params.iter().flat_map(|p| p.iter().copied()).collect();
+                let mut i = 0;
+                while i < all_params.len() {
+                    let param = all_params[i];
+                    match param {
+                        0 => { fg = [200, 200, 200]; bg = [12, 12, 12]; i += 1; }
+                        30 => { fg = [0, 0, 0]; i += 1; }
+                        31 => { fg = [205, 49, 49]; i += 1; }
+                        32 => { fg = [13, 188, 121]; i += 1; }
+                        33 => { fg = [229, 229, 16]; i += 1; }
+                        34 => { fg = [36, 114, 200]; i += 1; }
+                        35 => { fg = [188, 63, 188]; i += 1; }
+                        36 => { fg = [17, 168, 205]; i += 1; }
+                        37 => { fg = [229, 229, 229]; i += 1; }
+                        38 => {
+                            if i + 2 < all_params.len() && all_params[i+1] == 5 {
+                                // 256-color fallback (ignored for now)
+                                i += 3;
+                            } else if i + 4 < all_params.len() && all_params[i+1] == 2 {
+                                // true-color [38;2;R;G;B]
+                                fg = [all_params[i+2] as u8, all_params[i+3] as u8, all_params[i+4] as u8];
+                                i += 5;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        39 => { fg = [200, 200, 200]; i += 1; }
+                        40 => { bg = [0, 0, 0]; i += 1; }
+                        41 => { bg = [205, 49, 49]; i += 1; }
+                        42 => { bg = [13, 188, 121]; i += 1; }
+                        43 => { bg = [229, 229, 16]; i += 1; }
+                        44 => { bg = [36, 114, 200]; i += 1; }
+                        45 => { bg = [188, 63, 188]; i += 1; }
+                        46 => { bg = [17, 168, 205]; i += 1; }
+                        47 => { bg = [229, 229, 229]; i += 1; }
+                        48 => {
+                            if i + 2 < all_params.len() && all_params[i+1] == 5 {
+                                i += 3;
+                            } else if i + 4 < all_params.len() && all_params[i+1] == 2 {
+                                // true-color [48;2;R;G;B]
+                                bg = [all_params[i+2] as u8, all_params[i+3] as u8, all_params[i+4] as u8];
+                                i += 5;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        49 => { bg = [12, 12, 12]; i += 1; }
+                        90 => { fg = [102, 102, 102]; i += 1; }
+                        91 => { fg = [241, 76, 76]; i += 1; }
+                        92 => { fg = [35, 209, 139]; i += 1; }
+                        93 => { fg = [245, 245, 67]; i += 1; }
+                        94 => { fg = [59, 142, 234]; i += 1; }
+                        95 => { fg = [214, 112, 214]; i += 1; }
+                        96 => { fg = [41, 184, 219]; i += 1; }
+                        97 => { fg = [229, 229, 229]; i += 1; }
+                        _ => { i += 1; }
+                    }
+                }
+                self.current_fg = fg;
+                self.current_bg = bg;
             }
             'h' | 'l' => {
                 // Set/Reset Mode (e.g., cursor visibility, bracketed paste)
